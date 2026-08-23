@@ -1,0 +1,18 @@
+{
+  "entities": [
+    { "id": "agent:rag-fastapi-assistant", "type": "agent", "name": "Nova (rag-fastapi-assistant)" },
+    { "id": "agent:code-fix-agent", "type": "agent", "name": "code-fix-agent" },
+    { "id": "team:nova-agents", "type": "group", "name": "Nova agents" },
+    { "id": "team:admin-agents", "type": "group", "name": "Admin agents" },
+    { "id": "tool:search_docs", "type": "tool", "name": "search_docs" },
+    { "id": "tool:escalate_to_human", "type": "tool", "name": "escalate_to_human" },
+    { "id": "tool:delete_repository", "type": "tool", "name": "delete_repository" }
+  ],
+  "relations": [
+    { "source": "agent:rag-fastapi-assistant", "target": "team:nova-agents", "type": "MEMBER_OF" },
+    { "source": "agent:code-fix-agent", "target": "team:admin-agents", "type": "MEMBER_OF" },
+    { "source": "team:nova-agents", "target": "tool:search_docs", "type": "CAN_CALL" },
+    { "source": "team:nova-agents", "target": "tool:escalate_to_human", "type": "CAN_CALL" },
+    { "source": "team:admin-agents", "target": "tool:delete_repository", "type": "CAN_CALL" }
+  ]
+}

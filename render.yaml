@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: warrant
+    runtime: python
+    buildCommand: >
+      pip install "git+https://github.com/naomytcheums-dotcom/warren.git"
+      "git+https://github.com/naomytcheums-dotcom/ledger.git"
+      && pip install -e .
+    startCommand: uvicorn warrant.service:app --host 0.0.0.0 --port $PORT
+    plan: free
