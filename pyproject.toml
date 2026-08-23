@@ -21,6 +21,7 @@ dependencies = [
     "fastapi>=0.115",
     "pydantic>=2.0",
     "uvicorn>=0.30",
+    "cryptography>=42",
     "warren",
     "ledger",
 ]

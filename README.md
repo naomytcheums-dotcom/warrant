@@ -56,6 +56,50 @@ is a member of `nova-agents`, which can call `search_docs` and `escalate_to_huma
 which only `admin-agents` can call. Both the allow and the deny above are genuine graph traversal results, not
 hardcoded.
 
+## Beyond a single check: tokens, sessions, and impact analysis
+
+### Signed capability tokens — skip re-traversing the graph on every call
+
+```bash
+curl -X POST "localhost:8600/token?ttl_seconds=300" -H "Content-Type: application/json" \
+  -d '{"actor": "agent:rag-fastapi-assistant", "action": "call", "resource": "tool:search_docs"}'
+# {"issued": true, "token": {..., "signature": "..."}}  -- only issued if the grant is actually allowed right now
+
+curl -X POST localhost:8600/token/verify -H "Content-Type: application/json" -d '{"token": {...}}'
+# {"valid": true, "reason": "valid"}  -- signature + expiry check, no graph traversal, no audit write
+```
+
+A token is a signed, time-bound claim, verifiable without hitting the graph again. It's a deliberate
+freshness/latency trade-off, not a free win — see Known limitations.
+
+### Session-aware authorization — don't trust a decision forever
+
+```bash
+curl -X POST localhost:8600/session/check -H "Content-Type: application/json" \
+  -d '{"session_id": "sess-1", "actor": "agent:rag-fastapi-assistant", "action": "call", "resource": "tool:search_docs"}'
+# {"allowed": true, "reason": "...", "revalidated": true}   -- first check: hits the graph
+# a second check within 60s: {"revalidated": false}         -- served from cache
+# a check after 60s: {"revalidated": true}                  -- re-checked against the graph, catching any revocation since
+```
+
+Checking authorization once at the start of a long-running agent session and trusting it for the rest of that
+session is exactly the assumption that breaks once access can be revoked mid-session. `tests/test_session.py`
+proves both halves of this: a revoked grant is still (staleness-)reported as allowed *within* the revalidation
+window, and correctly caught once that window expires — the trade-off is tested, not just asserted.
+
+### "What if I removed this relationship" — impact analysis before you actually remove it
+
+```bash
+curl -X POST localhost:8600/simulate -H "Content-Type: application/json" -d '{
+  "source": "agent:rag-fastapi-assistant", "target": "team:nova-agents", "relation_type": "MEMBER_OF",
+  "checks": [["agent:rag-fastapi-assistant", "call", "tool:search_docs"]]
+}'
+# {"results": [{"actor": "...", "before": true, "after": false, "changed": true}]}
+```
+
+Never mutates the real graph — it filters a fresh copy built from a snapshot and re-runs the given checks
+against it, so an admin can confirm exactly what a policy change would break before making it for real.
+
 ## Two real bugs, found by actually running this under load, not by reading the code
 
 **A real correctness bug**: `LedgerStore.append()` (in the sibling `ledger` project) has no locking of its own
@@ -91,16 +135,34 @@ the identical test:
 An ~88x improvement in p50, ~21x in throughput — from fixing the measurement, not the service. The remaining
 p95/p99 tail (~2.1-2.2s under 50 concurrent requests) is real and not yet explained; see Known limitations.
 
+## Deploying it
+
+Two paths, both driven from the repo, neither needing this author's own accounts:
+
+- **Buildpack-based hosts** (Render, Railway, etc.) — `render.yaml` is included for Render specifically; most
+  others just need `requirements.txt` (also included, since `warren`/`ledger` aren't on PyPI yet and need
+  installing from source).
+- **Docker-based hosts** — a `Dockerfile` is included, for any host that deploys from a container instead of a
+  buildpack (e.g. [Koyeb](https://www.koyeb.com), whose free instance has no time-based quota — the same choice
+  already used for [voxbridge](https://github.com/naomytcheums-dotcom/voxbridge) in this portfolio, for the same
+  reason: **New App → GitHub → select this repo → Koyeb detects the Dockerfile → deploy**). The Docker build
+  itself is validated in CI (see below) rather than locally, since this environment doesn't have Docker
+  installed — deliberately not claiming a build works without having actually run it somewhere.
+
 ## Tests
 
 ```bash
 pytest tests/ -v
 ```
 
-16 tests: policy traversal (allow via group chain, deny with no path, direct grants, unknown
+32 tests: policy traversal (allow via group chain, deny with no path, direct grants, unknown
 actors/resources, action-specificity, max_hops enforcement), the concurrency corruption reproduction and its
-fix, and FastAPI integration tests (via `TestClient`, no real network) covering both endpoints and the
-audit-vs-explain logging distinction. All offline.
+fix, capability tokens (issue/verify round trip, tampering, expiry, wrong key), session revalidation (including
+the mid-session revocation trade-off, proven both stale-within-window and caught-after-expiry), simulation
+(flips the right checks, leaves unrelated grants alone, never mutates the real graph), and FastAPI integration
+tests (via `TestClient`, no real network) covering every endpoint. All offline. CI additionally builds the
+Docker image on GitHub's own runners and smoke-tests `/health` inside the running container — the actual build
+this author can't run locally, verified where it matters instead of only claimed.
 
 ## Known limitations
 
@@ -117,12 +179,23 @@ audit-vs-explain logging distinction. All offline.
   within one process; it doesn't make them fast at very high throughput, and it doesn't help at all across
   multiple server processes/workers writing to the same file, which would need a different storage layer
   entirely (a real database, not a JSONL file).
+- **Token signing keys are ephemeral, generated fresh on process start.** Every token issued before a restart
+  becomes unverifiable after one — fine for a demo, not for production, which needs persistent, rotated key
+  storage instead of an in-memory keypair.
+- **Session revalidation is intentionally stale within its window (default 60s).** A grant revoked mid-session
+  is still reported as allowed until the next revalidation — tested and documented as a deliberate trade-off
+  (see above), not an oversight, but a real one: don't set the window longer than an acceptable exposure time
+  for whatever's being protected.
+- **The Docker build is validated on GitHub's runners, not on this author's own machine**, which doesn't have
+  Docker installed. CI building and smoke-testing the actual container is the verification; nothing here claims
+  a local Docker run that never happened.
 
 ## Status
 
-Early (`v0.1.0`, alpha). Policy engine, audit bridge, and HTTP service are complete and tested; load-tested
-against a live running instance with a documented, honest before/after (not just claimed). Not yet published to
-PyPI. Feedback and issues welcome.
+Early (`v0.1.0`, alpha). Policy engine, audit bridge, capability tokens, session revalidation, simulation, and
+the HTTP service are complete and tested (32 tests); load-tested against a live running instance with a
+documented, honest before/after (not just claimed); the Docker image builds and passes a health check in CI.
+Not yet published to PyPI. Feedback and issues welcome.
 
 ## License
 

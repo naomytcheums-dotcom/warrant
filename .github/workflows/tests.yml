@@ -29,3 +29,20 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the Docker image
+        run: docker build -t warrant:ci-check .
+
+      - name: Run it and smoke-test /health
+        run: |
+          docker run -d -p 8000:8000 --name warrant-ci warrant:ci-check
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8000/health; then exit 0; fi
+            sleep 1
+          done
+          echo "warrant never became healthy"; docker logs warrant-ci; exit 1

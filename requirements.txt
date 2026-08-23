@@ -1,0 +1,7 @@
+# warren and ledger are not yet on PyPI -- installed from source.
+# Buildpack-based hosts (as opposed to Docker-based ones) typically
+# just run `pip install -r requirements.txt`, so this file exists
+# specifically for that path; Docker-based hosts use the Dockerfile.
+git+https://github.com/naomytcheums-dotcom/warren.git
+git+https://github.com/naomytcheums-dotcom/ledger.git
+-e .
