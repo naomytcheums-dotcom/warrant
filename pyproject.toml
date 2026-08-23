@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "warrant"
-version = "0.1.0"
+version = "0.2.0"
 description = "A real-time authorization service for AI agents -- graph-based access control, every decision hash-chained and audited."
 readme = "README.md"
 license = { text = "MIT" }

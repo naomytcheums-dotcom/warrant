@@ -15,8 +15,17 @@ LedgerStore does not solve by itself (see audit.py).
 """
 
 from warrant.audit import ConcurrentAuditLog
+from warrant.keystore import KeyStoreError, load_or_create_keypair
 from warrant.policy import AuthDecision, authorize
+from warrant.sql_store import SQLAuditLog
 
-__all__ = ["AuthDecision", "authorize", "ConcurrentAuditLog"]
+__all__ = [
+    "AuthDecision",
+    "authorize",
+    "ConcurrentAuditLog",
+    "SQLAuditLog",
+    "KeyStoreError",
+    "load_or_create_keypair",
+]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

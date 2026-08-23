@@ -36,6 +36,7 @@ the reason.
 ```bash
 pip install -e ../warren -e ../ledger   # local editable installs, not yet on PyPI
 pip install -e ".[dev]"
+export WARRANT_KEY_PASSPHRASE="pick-something-real-here"   # required -- encrypts the persistent signing key
 uvicorn warrant.service:app --port 8600
 ```
 
@@ -100,6 +101,41 @@ curl -X POST localhost:8600/simulate -H "Content-Type: application/json" -d '{
 Never mutates the real graph — it filters a fresh copy built from a snapshot and re-runs the given checks
 against it, so an admin can confirm exactly what a policy change would break before making it for real.
 
+## Persistent storage: a real database and a real key, not demo shortcuts
+
+The first version of this project used a JSONL file for the audit log and generated a fresh signing key every
+time the process started. Both were honestly documented as limitations rather than hidden — and both are now
+fixed for real, not just marked "TODO":
+
+- **`sql_store.SQLAuditLog`** replaces the JSONL file with SQLite in WAL mode, writing inside an explicit
+  `BEGIN IMMEDIATE` transaction. That's not a cosmetic swap: a Python `threading.Lock` (the original fix) only
+  serializes writes *within one process* — a real deployment running multiple worker processes or container
+  replicas would still corrupt the chain, because a lock held in one process's memory means nothing to another.
+  SQLite's own transaction locking is enforced by the database engine itself, correct across processes, not
+  just threads. `tests/test_sql_store.py` hammers it with 20 threads writing 200 records total and verifies the
+  chain survives intact.
+- **`keystore.load_or_create_keypair`** persists the Ed25519 signing key to disk, encrypted with a passphrase
+  from the `WARRANT_KEY_PASSPHRASE` environment variable (never stored in plaintext, never committed). A
+  restart loads the same key instead of generating a new one.
+
+**Proven with a real restart, not just a unit test.** A token was issued by one running process:
+
+```bash
+curl -X POST localhost:8600/token -d '{"actor":"agent:rag-fastapi-assistant","action":"call","resource":"tool:search_docs"}'
+# {"issued":true,"token":{...,"signature":"77f5176f..."}}
+```
+
+That process was then killed and a completely new one started. The token issued by the *first* process was
+verified by the *second*:
+
+```bash
+curl -X POST localhost:8600/token/verify -d '{"token": {...signature 77f5176f...}}'
+# {"valid":true,"reason":"valid"}
+```
+
+`/audit/count` also correctly showed the pre-restart decision was still there. Neither the key nor the audit
+history reset — the actual failure mode this module exists to fix, demonstrated across a real process boundary.
+
 ## Two real bugs, found by actually running this under load, not by reading the code
 
 **A real correctness bug**: `LedgerStore.append()` (in the sibling `ledger` project) has no locking of its own
@@ -149,20 +185,26 @@ Two paths, both driven from the repo, neither needing this author's own accounts
   itself is validated in CI (see below) rather than locally, since this environment doesn't have Docker
   installed — deliberately not claiming a build works without having actually run it somewhere.
 
+Either way, **set `WARRANT_KEY_PASSPHRASE`** in the host's environment variable / secrets settings before first
+boot — the service won't start without it (see Persistent storage, above). Never put the real value in
+`render.yaml`, the Dockerfile, or anywhere else that's committed to the repo.
+
 ## Tests
 
 ```bash
 pytest tests/ -v
 ```
 
-32 tests: policy traversal (allow via group chain, deny with no path, direct grants, unknown
-actors/resources, action-specificity, max_hops enforcement), the concurrency corruption reproduction and its
-fix, capability tokens (issue/verify round trip, tampering, expiry, wrong key), session revalidation (including
-the mid-session revocation trade-off, proven both stale-within-window and caught-after-expiry), simulation
-(flips the right checks, leaves unrelated grants alone, never mutates the real graph), and FastAPI integration
-tests (via `TestClient`, no real network) covering every endpoint. All offline. CI additionally builds the
-Docker image on GitHub's own runners and smoke-tests `/health` inside the running container — the actual build
-this author can't run locally, verified where it matters instead of only claimed.
+41 tests: policy traversal (allow via group chain, deny with no path, direct grants, unknown
+actors/resources, action-specificity, max_hops enforcement), the JSONL concurrency corruption reproduction and
+its lock-based fix, the SQLite audit log (round trip, chain validity across sequential *and* concurrent writes
+from 20 threads, persistence across separate instances simulating a restart), the encrypted key store (creation,
+restart persistence, wrong-passphrase rejection, confirms the file isn't plaintext), capability tokens
+(issue/verify round trip, tampering, expiry, wrong key), session revalidation (including the mid-session
+revocation trade-off, proven both stale-within-window and caught-after-expiry), simulation (flips the right
+checks, leaves unrelated grants alone, never mutates the real graph), and FastAPI integration tests (via
+`TestClient`, no real network) covering every endpoint. All offline. CI additionally builds the Docker image on
+GitHub's own runners and smoke-tests `/health` inside the running container.
 
 ## Known limitations
 
@@ -175,13 +217,16 @@ this author can't run locally, verified where it matters instead of only claimed
 - **No support for negative grants (explicit deny) or revocation propagation.** A relationship, once added,
   grants access until the edge is removed; there's no "deny overrides allow" semantics some authorization
   systems need.
-- **Single-process, single-file audit log.** `ConcurrentAuditLog`'s lock makes concurrent writes *correct*
-  within one process; it doesn't make them fast at very high throughput, and it doesn't help at all across
-  multiple server processes/workers writing to the same file, which would need a different storage layer
-  entirely (a real database, not a JSONL file).
-- **Token signing keys are ephemeral, generated fresh on process start.** Every token issued before a restart
-  becomes unverifiable after one — fine for a demo, not for production, which needs persistent, rotated key
-  storage instead of an in-memory keypair.
+- **`ConcurrentAuditLog` (JSONL) is still in the codebase, still tested, and no longer what the service uses
+  by default.** `SQLAuditLog` replaced it in `service.py` for the reasons above. The JSONL version is kept as a
+  simpler, dependency-free option for anyone embedding just the audit piece without wanting a SQLite file.
+- **The passphrase itself is still just an environment variable, not a real KMS/HSM.** `keystore.py` encrypts
+  the key at rest and gets it out of plaintext, which is a real improvement — but the passphrase protecting it
+  still has to live somewhere (an env var, a `.env` file, a host's secret manager). A genuine HSM/cloud-KMS
+  integration needs paid cloud infrastructure this project doesn't have; documenting that honestly is better
+  than pretending a single-node service has enterprise key management.
+- **No key rotation.** The persisted key is reused indefinitely once created. Rotating it (issuing a new key
+  while still accepting tokens signed by the old one until they expire) is unimplemented.
 - **Session revalidation is intentionally stale within its window (default 60s).** A grant revoked mid-session
   is still reported as allowed until the next revalidation — tested and documented as a deliberate trade-off
   (see above), not an oversight, but a real one: don't set the window longer than an acceptable exposure time
@@ -192,10 +237,11 @@ this author can't run locally, verified where it matters instead of only claimed
 
 ## Status
 
-Early (`v0.1.0`, alpha). Policy engine, audit bridge, capability tokens, session revalidation, simulation, and
-the HTTP service are complete and tested (32 tests); load-tested against a live running instance with a
-documented, honest before/after (not just claimed); the Docker image builds and passes a health check in CI.
-Not yet published to PyPI. Feedback and issues welcome.
+Early (`v0.2.0`, alpha). Policy engine, SQLite-backed audit trail, encrypted persistent signing keys, capability
+tokens, session revalidation, simulation, and the HTTP service are complete and tested (41 tests); load-tested
+against a live running instance with a documented, honest before/after; a real process restart was used to
+prove both the audit history and a previously issued token survive it; the Docker image builds and passes a
+health check in CI. Not yet published to PyPI. Feedback and issues welcome.
 
 ## License
 

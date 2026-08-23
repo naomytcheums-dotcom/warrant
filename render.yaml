@@ -8,3 +8,6 @@ services:
       && pip install -e .
     startCommand: uvicorn warrant.service:app --host 0.0.0.0 --port $PORT
     plan: free
+    envVars:
+      - key: WARRANT_KEY_PASSPHRASE
+        sync: false  # set manually in the host's dashboard -- never committed to the repo

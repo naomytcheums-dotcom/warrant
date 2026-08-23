@@ -14,7 +14,9 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(service_module, "_sessions", None)
     monkeypatch.setattr(service_module, "_signing_key", None)
     monkeypatch.setattr(service_module, "_verify_key", None)
-    monkeypatch.setattr(service_module, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(service_module, "AUDIT_DB_PATH", tmp_path / "audit.db")
+    monkeypatch.setattr(service_module, "KEY_PATH", tmp_path / "signing_key.pem")
+    monkeypatch.setenv("WARRANT_KEY_PASSPHRASE", "test-only-passphrase")
     yield
 
 

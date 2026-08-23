@@ -7,3 +7,7 @@ venv/
 build/
 dist/
 audit.jsonl
+audit.db
+audit.db-wal
+audit.db-shm
+signing_key.pem

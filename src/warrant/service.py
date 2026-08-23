@@ -25,18 +25,19 @@ from pathlib import Path
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from ledger.pki import generate_keypair
 from warren import KnowledgeGraph
 
-from warrant.audit import ConcurrentAuditLog
+from warrant.keystore import load_or_create_keypair
 from warrant.policy import authorize
 from warrant.session import SessionAuthorizer
 from warrant.simulate import simulate_relation_removal
+from warrant.sql_store import SQLAuditLog
 from warrant.tokens import issue_token, verify_token
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 GRAPH_PATH = REPO_ROOT / "data" / "policy_graph.json"
-AUDIT_PATH = REPO_ROOT / "audit.jsonl"
+AUDIT_DB_PATH = REPO_ROOT / "audit.db"
+KEY_PATH = REPO_ROOT / "signing_key.pem"
 
 app = FastAPI(
     title="warrant",
@@ -60,7 +61,7 @@ def get_graph():
 def get_audit():
     global _audit
     if _audit is None:
-        _audit = ConcurrentAuditLog(AUDIT_PATH)
+        _audit = SQLAuditLog(AUDIT_DB_PATH)
     return _audit
 
 
@@ -72,13 +73,13 @@ def get_sessions():
 
 
 def get_keys():
-    """Generated once per process start. Restarting the service
-    invalidates every token issued before the restart -- a real
-    deployment needs persistent key storage, not an ephemeral keypair;
-    see the README's Known limitations."""
+    """Loaded once per process from an encrypted key file (see
+    keystore.py) rather than generated fresh -- a restart reuses the
+    same key, so tokens issued before one stay verifiable after it.
+    Requires WARRANT_KEY_PASSPHRASE to be set in the environment."""
     global _signing_key, _verify_key
     if _signing_key is None:
-        _signing_key, _verify_key = generate_keypair()
+        _signing_key, _verify_key = load_or_create_keypair(KEY_PATH)
     return _signing_key, _verify_key
 
 
